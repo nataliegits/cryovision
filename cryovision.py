@@ -31,8 +31,7 @@ QUADRANTS = [
 
 SYSTEM_PROMPT = """You are a laboratory assistant specializing in cryogenic sample storage.
 You have excellent attention to detail and can read small, partially obscured text on tube labels.
-Your job is to carefully read images of cryogenic freezer storage box sections and identify
-the label on each tube position."""
+Your job is to carefully describe each tube position in a cryogenic freezer storage box section."""
 
 
 def make_quadrant_prompt(row_range: str, col_range: str, rows: list, cols: list) -> str:
@@ -41,19 +40,21 @@ def make_quadrant_prompt(row_range: str, col_range: str, rows: list, cols: list)
     return f"""This image shows a SECTION of a 10×10 cryogenic freezer storage box.
 This section contains rows {row_range} and columns {col_range}.
 
-Go position by position, left to right, top to bottom. For each tube:
-- Look closely at any text printed or written on the cap or side of the tube
-- Note any alphanumeric codes, barcodes, or handwritten labels
-- Use null if the position is empty or the label is truly unreadable
+Go position by position, left to right, top to bottom. For each tube, report whatever
+you can observe — in order of preference:
+1. Any printed or handwritten text, IDs, or barcodes on the cap or tube
+2. The cap color (e.g. "red cap", "blue cap") if no text is readable
+3. A brief visual description (e.g. "clear tube, empty") if nothing else is visible
+4. null ONLY if the position is completely empty (no tube present at all)
 
 The positions in this section are: {pos_list}
 
 Respond with ONLY a valid JSON object — no prose, no markdown fences:
 {{
-  "{positions[0]}": "label or null",
-  "{positions[1]}": "label or null",
+  "{positions[0]}": "label, cap color, or description",
+  "{positions[1]}": "label, cap color, or description",
   ...
-  "{positions[-1]}": "label or null"
+  "{positions[-1]}": "label, cap color, or description"
 }}
 
 Include all {len(positions)} positions listed above."""
