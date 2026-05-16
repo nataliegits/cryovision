@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 cryovision.py — Identify labels in a 10x10 cryogenic freezer box using Claude vision.
 
@@ -9,36 +10,62 @@ Usage:
 
 import argparse
 import base64
+import io
 import json
 import sys
 from pathlib import Path
 
 import anthropic
+from PIL import Image
 
 ROWS = list("ABCDEFGHIJ")
 COLS = [str(n) for n in range(1, 11)]
 
+# Quadrants: (row_slice, col_slice, row_labels, col_labels)
+QUADRANTS = [
+    ("A–E", "1–5",  ROWS[:5], COLS[:5]),
+    ("A–E", "6–10", ROWS[:5], COLS[5:]),
+    ("F–J", "1–5",  ROWS[5:], COLS[:5]),
+    ("F–J", "6–10", ROWS[5:], COLS[5:]),
+]
+
 SYSTEM_PROMPT = """You are a laboratory assistant specializing in cryogenic sample storage.
-Your job is to read images of 10×10 freezer storage boxes and identify the label or contents
-of each position in the grid."""
+You have excellent attention to detail and can read small, partially obscured text on tube labels.
+Your job is to carefully read images of cryogenic freezer storage box sections and identify
+the label on each tube position."""
 
-USER_PROMPT = """This image shows a 10×10 cryogenic freezer storage box.
-The grid is labeled with rows A–J (top to bottom) and columns 1–10 (left to right),
-giving positions A1 through J10.
 
-Examine the image carefully and return a JSON object mapping every grid position to whatever
-label text, tube ID, or content you can read. Use null for positions that appear empty or
-whose contents you cannot determine.
+def make_quadrant_prompt(row_range: str, col_range: str, rows: list, cols: list) -> str:
+    positions = [f"{r}{c}" for r in rows for c in cols]
+    pos_list = ", ".join(positions)
+    return f"""This image shows a SECTION of a 10×10 cryogenic freezer storage box.
+This section contains rows {row_range} and columns {col_range}.
 
-Respond with ONLY a valid JSON object — no prose, no markdown fences. Example format:
-{
-  "A1": "SampleID-001",
-  "A2": null,
+Go position by position, left to right, top to bottom. For each tube:
+- Look closely at any text printed or written on the cap or side of the tube
+- Note any alphanumeric codes, barcodes, or handwritten labels
+- Use null if the position is empty or the label is truly unreadable
+
+The positions in this section are: {pos_list}
+
+Respond with ONLY a valid JSON object — no prose, no markdown fences:
+{{
+  "{positions[0]}": "label or null",
+  "{positions[1]}": "label or null",
   ...
-  "J10": "Control-Neg"
-}
+  "{positions[-1]}": "label or null"
+}}
 
-Include all 100 positions (A1–J10)."""
+Include all {len(positions)} positions listed above."""
+
+
+def encode_pil_image(img: Image.Image, fmt: str = "JPEG") -> tuple[str, str]:
+    """Encode a PIL image to base64."""
+    buf = io.BytesIO()
+    img.save(buf, format=fmt)
+    data = base64.standard_b64encode(buf.getvalue()).decode("utf-8")
+    media_type = "image/jpeg" if fmt == "JPEG" else "image/png"
+    return data, media_type
 
 
 def encode_image(path: Path) -> tuple[str, str]:
@@ -61,17 +88,50 @@ def encode_image(path: Path) -> tuple[str, str]:
     return data, media_type
 
 
-def analyze_box(image_path: Path) -> dict[str, str | None]:
-    """Send the image to Claude and return the parsed grid map."""
-    image_data, media_type = encode_image(image_path)
+def crop_quadrants(image_path: Path) -> list[tuple[Image.Image, str, str, list, list]]:
+    """Split the image into 4 quadrants."""
+    img = Image.open(image_path)
+    w, h = img.size
+    mid_x, mid_y = w // 2, h // 2
 
-    client = anthropic.Anthropic()
+    crops = [
+        img.crop((0,     0,     mid_x, mid_y)),  # top-left
+        img.crop((mid_x, 0,     w,     mid_y)),  # top-right
+        img.crop((0,     mid_y, mid_x, h)),      # bottom-left
+        img.crop((mid_x, mid_y, w,     h)),      # bottom-right
+    ]
+    return [(crop, *quad[:-2], quad[2], quad[3])
+            for crop, quad in zip(crops, QUADRANTS)]
 
-    print("Sending image to Claude for analysis…", file=sys.stderr)
+
+def parse_response(raw: str) -> dict:
+    raw = raw.strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        raw = "\n".join(line for line in lines if not line.startswith("```")).strip()
+    return json.loads(raw)
+
+
+def analyze_quadrant(
+    client: anthropic.Anthropic,
+    img: Image.Image,
+    row_range: str,
+    col_range: str,
+    rows: list,
+    cols: list,
+    quad_num: int,
+) -> dict[str, str | None]:
+    """Send one quadrant to Claude with thinking enabled."""
+    image_data, media_type = encode_pil_image(img)
+    prompt = make_quadrant_prompt(row_range, col_range, rows, cols)
+
+    print(f"  Analyzing quadrant {quad_num}/4 (rows {row_range}, cols {col_range})…",
+          file=sys.stderr)
 
     response = client.messages.create(
         model="claude-opus-4-6",
-        max_tokens=4096,
+        max_tokens=8000,
+        thinking={"type": "adaptive"},
         system=SYSTEM_PROMPT,
         messages=[
             {
@@ -85,10 +145,7 @@ def analyze_box(image_path: Path) -> dict[str, str | None]:
                             "data": image_data,
                         },
                     },
-                    {
-                        "type": "text",
-                        "text": USER_PROMPT,
-                    },
+                    {"type": "text", "text": prompt},
                 ],
             }
         ],
@@ -96,45 +153,45 @@ def analyze_box(image_path: Path) -> dict[str, str | None]:
 
     raw = next(
         (block.text for block in response.content if block.type == "text"), ""
-    ).strip()
-
-    # Strip accidental markdown fences if Claude adds them despite instructions
-    if raw.startswith("```"):
-        lines = raw.splitlines()
-        raw = "\n".join(
-            line for line in lines if not line.startswith("```")
-        ).strip()
+    )
 
     try:
-        grid = json.loads(raw)
+        return parse_response(raw)
     except json.JSONDecodeError as exc:
-        print(f"Error: Claude returned unparseable JSON.\n{exc}\n\nRaw response:\n{raw}",
+        print(f"Warning: could not parse quadrant {quad_num} response.\n{exc}",
               file=sys.stderr)
-        sys.exit(1)
+        return {}
+
+
+def analyze_box(image_path: Path) -> dict[str, str | None]:
+    """Split image into quadrants, analyze each with Claude, merge results."""
+    client = anthropic.Anthropic()
+    grid: dict[str, str | None] = {}
+
+    print("Splitting image into quadrants and analyzing each…", file=sys.stderr)
+
+    quadrant_data = crop_quadrants(image_path)
+    for i, (img, row_range, col_range, rows, cols) in enumerate(quadrant_data, 1):
+        result = analyze_quadrant(client, img, row_range, col_range, rows, cols, i)
+        grid.update(result)
 
     # Ensure all 100 positions exist
-    all_positions = {f"{r}{c}" for r in ROWS for c in COLS}
-    for pos in all_positions:
-        grid.setdefault(pos, None)
+    for r in ROWS:
+        for c in COLS:
+            grid.setdefault(f"{r}{c}", None)
 
     return grid
 
 
 def print_grid(grid: dict[str, str | None]) -> None:
     """Pretty-print the grid as an aligned table."""
-    # Measure max label width for column sizing
     max_label = max(
         (len(str(v)) for v in grid.values() if v is not None),
         default=4,
     )
-    cell_width = max(max_label, 4)  # at least 4 chars wide
+    cell_width = max(max_label, 4)
 
-    header_col_width = 2  # row letter + space
-
-    # Header row (column numbers)
-    header = " " * header_col_width + "  ".join(
-        str(c).center(cell_width) for c in COLS
-    )
+    header = "   " + "  ".join(str(c).center(cell_width) for c in COLS)
     separator = "-" * len(header)
 
     print()
@@ -149,8 +206,13 @@ def print_grid(grid: dict[str, str | None]) -> None:
                 cells.append("·" * cell_width)
             else:
                 cells.append(str(label).center(cell_width)[:cell_width])
-        print(f"{row} " + "  ".join(cells))
+        print(f"{row}  " + "  ".join(cells))
 
+    print()
+
+    # Summary counts
+    filled = sum(1 for v in grid.values() if v is not None)
+    print(f"Filled: {filled}/100   Empty/unread: {100 - filled}/100")
     print()
 
 

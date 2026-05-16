@@ -45,12 +45,14 @@ Supported image formats: JPEG, PNG, GIF, WebP.
 **Grid view** — an aligned ASCII table printed to the terminal:
 
 ```
-    1       2       3    ...   10
+      1       2       3    ...   10
 --------------------------------------------
 A  SampleID-001  SampleID-002  ····  ...
 B  ····          ····          ····  ...
 ...
 J  ····          ····          ····  Control-Neg
+
+Filled: 87/100   Empty/unread: 13/100
 ```
 
 ## Tips for best results
@@ -62,6 +64,23 @@ J  ····          ····          ····  Control-Neg
 
 ## How it works
 
-1. The image is base64-encoded and sent to `claude-opus-4-6` via the Anthropic Messages API.
-2. Claude is prompted to return a strict JSON object mapping every position to its label.
-3. The script parses the response, fills in any missing positions with `null`, and renders both outputs.
+1. The image is split into 4 quadrants (top-left, top-right, bottom-left, bottom-right).
+2. Each quadrant is sent separately to `claude-opus-4-6` with thinking mode enabled, so Claude gets more pixels per tube and reasons carefully about ambiguous labels.
+3. Results from all 4 quadrants are merged into a single 100-position map.
+4. Missing positions are filled with `null` and the grid is rendered to the terminal.
+
+---
+
+## Changelog
+
+### v2 — improved accuracy
+- **Quadrant splitting:** image is divided into 4 close-up sections before sending to Claude, giving ~4× more pixels per tube
+- **Thinking mode:** Claude reasons through ambiguous labels before committing to an answer (`thinking: adaptive`)
+- **Better prompting:** Claude now goes position by position and considers text carefully before outputting JSON
+- **Summary line:** grid view now shows filled vs empty count at the bottom
+- Added `Pillow` dependency for image cropping
+
+### v1 — initial release
+- Single-image analysis via Claude vision API
+- CLI with `--image` and `--output` flags
+- JSON output + ASCII grid view
