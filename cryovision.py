@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import base64
+import csv
 import io
 import json
 import sys
@@ -333,14 +334,23 @@ def main() -> None:
         print("Mode: accurate (10 rows, thinking enabled)", file=sys.stderr)
         grid = analyze_box_rows(image_path, use_thinking=True)
 
-    json_output = json.dumps(grid, indent=2, sort_keys=True)
-
     if args.output:
-        Path(args.output).write_text(json_output)
-        print(f"JSON written to: {args.output}", file=sys.stderr)
+        out = Path(args.output)
+        if out.suffix.lower() == ".csv":
+            with out.open("w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["position", "row", "column", "label"])
+                for r in ROWS:
+                    for c in COLS:
+                        pos = f"{r}{c}"
+                        writer.writerow([pos, r, c, grid.get(pos) or ""])
+            print(f"CSV written to: {out}", file=sys.stderr)
+        else:
+            out.write_text(json.dumps(grid, indent=2, sort_keys=True))
+            print(f"JSON written to: {out}", file=sys.stderr)
     else:
         print("\n=== JSON Output ===")
-        print(json_output)
+        print(json.dumps(grid, indent=2, sort_keys=True))
 
     print("\n=== Grid View ===")
     print_grid(grid)
