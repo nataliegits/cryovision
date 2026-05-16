@@ -19,10 +19,10 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 ## Usage
 
 ```bash
-# Accurate mode: OpenCV preprocessing + row-by-row analysis with thinking (default)
+# Accurate mode: grid detection + individual cell crops + thinking (default)
 python cryovision.py --image box.jpg
 
-# Fast mode: 4 quadrants, no thinking — quicker and cheaper
+# Fast mode: row strips, no thinking — quicker and cheaper
 python cryovision.py --image box.jpg --fast
 
 # Save as JSON
@@ -30,6 +30,9 @@ python cryovision.py --image box.jpg --output results.json
 
 # Save as CSV (opens in Excel / Google Sheets)
 python cryovision.py --image box.jpg --output results.csv
+
+# Debug: save a copy of the image with the detected grid overlaid
+python cryovision.py --image box.jpg --debug
 ```
 
 Supported image formats: JPEG, PNG, GIF, WebP.
@@ -75,9 +78,12 @@ Filled: 87/100   Empty/unread: 13/100
 ## How it works
 
 1. **OpenCV preprocessing** — perspective correction (detects the box border and flattens tilt), CLAHE contrast enhancement, and sharpening to make labels more legible
-2. **Row-by-row splitting** — the image is cut into 10 horizontal strips, one per row (A–J)
-3. **Claude vision** — each strip is sent to `claude-opus-4-6` with thinking mode enabled, so Claude sees a tight close-up of 10 tubes at a time and reasons carefully about each one
-4. **Graceful fallback** — if a row can't be parsed, it's filled with `null` rather than crashing
+2. **Grid line detection** — Hough line transform finds the actual grid lines in the image and crops each of the 100 cells individually; falls back to equal division if lines can't be detected
+3. **Row compositing** — the 10 cell crops per row are tiled into a single labelled image with column numbers above each cell
+4. **Claude vision** — each row composite is sent to `claude-opus-4-6` with thinking mode enabled; Claude sees a close-up of each individual tube cap and reasons carefully before answering
+5. **Graceful fallback** — if a row can't be parsed, it's filled with `null` rather than crashing
+
+Use `--debug` to save a copy of the preprocessed image with the detected grid overlaid — useful for diagnosing detection issues.
 
 ## Tips for best results
 
@@ -105,6 +111,12 @@ Implemented a hybrid approach as a stepping stone:
 - **`--fast` flag** to fall back to quadrant mode when speed/cost matters
 - Roadmap: move toward YOLO tube detection + individual cell crops → eventually replace Claude with a trained OCR model
 
+### v5 — individual cell crops + grid detection
+- **Hough line grid detection** — OpenCV now detects the actual grid lines in the photo rather than assuming equal spacing; falls back to equal division if lines can't be found
+- **Individual cell crops** — each of the 100 tube positions is cropped individually and composited into a labelled row image before being sent to Claude; Claude now sees one tube at a time rather than a strip of 10
+- **`--debug` flag** — saves the preprocessed image with the detected grid overlaid so you can verify detection is working correctly
+- **`--fast` mode** — replaces the old quadrant mode; uses row strips without thinking for quicker, cheaper runs
+
 ### v4 — CSV export
 - `--output results.csv` now exports a spreadsheet-friendly CSV with columns `position`, `row`, `column`, `label`
 - `--output results.json` still works as before — format is auto-detected from the file extension
@@ -126,7 +138,7 @@ Implemented a hybrid approach as a stepping stone:
 
 The group recommended moving toward traditional computer vision for better accuracy on handwritten labels. Planned next steps:
 
-- [ ] **Individual tube crops** — detect grid lines with OpenCV and crop each of the 100 cells individually before sending to Claude
+- [x] **Individual tube crops** — detect grid lines with OpenCV and crop each of the 100 cells individually before sending to Claude
 - [ ] **YOLO tube detection** — train a model to locate tubes regardless of box orientation or partial occlusion
 - [ ] **Roboflow training pipeline** — label a dataset of freezer box images for fine-tuning
 - [ ] **Replace Claude with local OCR** — once tube positions are reliably detected, run Tesseract or a fine-tuned text recognition model on each crop for offline, zero-cost operation
