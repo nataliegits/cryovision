@@ -25,8 +25,11 @@ python cryovision.py --image box.jpg
 # Fast mode: 4 quadrants, no thinking — quicker and cheaper
 python cryovision.py --image box.jpg --fast
 
-# Save JSON to a file
+# Save as JSON
 python cryovision.py --image box.jpg --output results.json
+
+# Save as CSV (opens in Excel / Google Sheets)
+python cryovision.py --image box.jpg --output results.csv
 ```
 
 Supported image formats: JPEG, PNG, GIF, WebP.
@@ -43,6 +46,17 @@ Supported image formats: JPEG, PNG, GIF, WebP.
   ...
   "J10": "GAPDH-F"
 }
+```
+
+**CSV** — four columns: `position`, `row`, `column`, `label`. Easy to open in Excel or Google Sheets and filter/sort by row or label.
+
+```
+position,row,column,label
+A1,A,1,SampleID-001
+A2,A,2,red cap
+A3,A,3,
+...
+J10,J,10,GAPDH-F
 ```
 
 **Grid view** — an aligned ASCII table with a filled/empty summary:
@@ -90,6 +104,10 @@ Implemented a hybrid approach as a stepping stone:
 - **Row-by-row splitting** replaces quadrants — Claude now sees a 1×10 strip per call (10 calls) instead of a 5×5 quadrant (4 calls), giving ~2.5× more pixels per tube
 - **`--fast` flag** to fall back to quadrant mode when speed/cost matters
 - Roadmap: move toward YOLO tube detection + individual cell crops → eventually replace Claude with a trained OCR model
+
+### v4 — CSV export
+- `--output results.csv` now exports a spreadsheet-friendly CSV with columns `position`, `row`, `column`, `label`
+- `--output results.json` still works as before — format is auto-detected from the file extension
 
 ### v2 — improved accuracy
 - **Quadrant splitting:** image divided into 4 sections before sending to Claude
