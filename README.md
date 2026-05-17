@@ -83,7 +83,11 @@ Filled: 87/100   Empty/unread: 13/100
 4. **Claude vision** — each row composite is sent to `claude-opus-4-6` with thinking mode enabled; Claude sees a close-up of each individual tube cap and reasons carefully before answering
 5. **Graceful fallback** — if a row can't be parsed, it's filled with `null` rather than crashing
 
-Use `--debug` to save a copy of the preprocessed image with the detected grid overlaid — useful for diagnosing detection issues.
+Use `--debug` to save a copy of the preprocessed image with two overlays:
+- **Green lines** — the 10×10 grid boundaries used to crop each cell
+- **Cyan circles** — the individual tube caps detected by HoughCircles
+
+Check this image before running a full analysis — if the circles are landing on the caps and the green lines sit between tubes, detection is working correctly. If not, it tells you exactly what's off.
 
 ## Tips for best results
 
@@ -112,9 +116,9 @@ Implemented a hybrid approach as a stepping stone:
 - Roadmap: move toward YOLO tube detection + individual cell crops → eventually replace Claude with a trained OCR model
 
 ### v5 — individual cell crops + grid detection
-- **Hough line grid detection** — OpenCV now detects the actual grid lines in the photo rather than assuming equal spacing; falls back to equal division if lines can't be found
+- **Circle-based grid detection** — OpenCV detects the tube caps as circles (HoughCircles) and fits the 10×10 grid to where the tubes actually are, rather than assuming equal spacing; falls back to equal division if too few circles are found
 - **Individual cell crops** — each of the 100 tube positions is cropped individually and composited into a labelled row image before being sent to Claude; Claude now sees one tube at a time rather than a strip of 10
-- **`--debug` flag** — saves the preprocessed image with the detected grid overlaid so you can verify detection is working correctly
+- **`--debug` flag** — saves the preprocessed image with green grid lines and cyan circles overlaid so you can verify detection before spending API credits
 - **`--fast` mode** — replaces the old quadrant mode; uses row strips without thinking for quicker, cheaper runs
 
 ### v4 — CSV export
