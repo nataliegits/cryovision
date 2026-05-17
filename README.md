@@ -1,8 +1,8 @@
 # cryovision 🧊📦
 
-Ever spent 20 minutes digging through a freezer box looking for one tube? Same. CryoVision uses Claude's vision API to read your 10×10 cryobox from a single photo — no more guessing which cap says GAPDH-F.
+Ever spent 20 minutes digging through a freezer box looking for one tube? Same. CryoVision uses OpenCV and Claude's vision API to read your 10×10 cryobox from a single photo and exports the info so you can have it on hand. No more guessing which box has "Primer 132689" 
 
-Point it at a photo of your box and it returns a JSON map of every grid position (A1–J10) with whatever label text, cap color, or description it can read.
+Point it at a photo of your box and it returns a JSON map of every grid position (A1–J10) with whatever label text, cap color, or description it can read. Save that map for your own reference.
 
 ## Requirements
 
