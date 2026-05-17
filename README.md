@@ -106,6 +106,18 @@ Built for a molecular biology lab that stores DNA oligos and PCR primers in 10×
 
 Initial approach: use Claude's vision API as a quick wrapper — no training data needed, works out of the box.
 
+### v6 — HoughCircles tuning: one circle per tube
+
+The debug overlay showed cyan circles stacking on top of each other — two or three rings detected per tube instead of one. The cause: every cryotube cap has at least two visually distinct circular features: the raised outer screw rim and the flat inner surface. With the original parameters, HoughCircles was finding both rings on every tube.
+
+Three parameter changes fixed it:
+
+- **`minDist` raised from `short/14` → `short/10`** — this is the minimum pixel distance allowed between any two detected circles. Raising it to roughly one full tube-width means the algorithm physically cannot place a second circle on the same tube it already found.
+- **`param2` raised from 30 → 50** — this is the accumulator threshold: how much evidence OpenCV requires before it commits to a circle. Higher = stricter = fewer false positives from cap ridges and reflections.
+- **`param1` raised from 50 → 80** — the upper Canny edge threshold used internally. Higher = only the sharpest edges (cap rims) count toward circle evidence; softer gradients (label text, shadows) are ignored.
+
+On top of that, the grid-fitting logic was upgraded from `np.linspace(min, max, 10)` to percentile-bin clustering: the detected circle centres are sorted and bucketed into 10 equal-percentile bins, and the median of each bin becomes the column or row centre. This means one outlier circle near the box edge can't drag the entire grid off — it just lands in a bin with a few other outliers and gets median'd away.
+
 ### v5 — circle-based grid detection + individual cell crops
 - **Circle-based grid detection** — OpenCV detects tube caps as circles (HoughCircles) and fits the 10×10 grid to where the tubes actually are, rather than assuming equal spacing; falls back to equal division if too few circles are found
 - **Individual cell crops** — each of the 100 tube positions is cropped individually and composited into a labelled row image before being sent to Claude; Claude now sees one tube at a time rather than a strip of 10

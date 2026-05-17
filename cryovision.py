@@ -116,6 +116,23 @@ def centers_to_boundaries(centers: np.ndarray, size: int) -> list[int]:
     return [int(v) for v in np.linspace(boundaries[0], boundaries[-1], 11)]
 
 
+def cluster_1d(coords: np.ndarray, n: int) -> np.ndarray:
+    """
+    Find n cluster centres in a 1-D array using percentile binning.
+    More robust than linspace(min, max) because it uses actual circle positions
+    and is not thrown off by a single outlier circle near the edge.
+    """
+    coords = np.sort(coords)
+    centers = []
+    for i in range(n):
+        lo = np.percentile(coords, 100 * i / n)
+        hi = np.percentile(coords, 100 * (i + 1) / n)
+        bucket = coords[(coords >= lo) & (coords <= hi)]
+        if len(bucket):
+            centers.append(float(np.median(bucket)))
+    return np.array(centers)
+
+
 def detect_grid(img: np.ndarray) -> tuple[list[int], list[int], object]:
     """
     Detect tube caps as circles with HoughCircles, fit a 10×10 grid to their
@@ -127,14 +144,16 @@ def detect_grid(img: np.ndarray) -> tuple[list[int], list[int], object]:
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
 
     short = min(h, w)
-    min_r    = int(short / 28)
-    max_r    = int(short / 14)
-    min_dist = int(short / 13)
+    # Each tube cap is ~1/10 of the box; radius is ~1/20.
+    # minDist ≈ one tube diameter prevents double-detecting the inner/outer cap rings.
+    min_r    = int(short / 22)
+    max_r    = int(short / 13)
+    min_dist = int(short / 10)   # ~1 tube-width apart — no two circles on the same tube
 
     circles = cv2.HoughCircles(
         blurred, cv2.HOUGH_GRADIENT, dp=1,
         minDist=min_dist,
-        param1=60, param2=28,
+        param1=80, param2=50,    # stricter: fewer false positives
         minRadius=min_r, maxRadius=max_r,
     )
 
@@ -143,12 +162,29 @@ def detect_grid(img: np.ndarray) -> tuple[list[int], list[int], object]:
         print(f"  Grid detection: found {n} circles — using equal division", file=sys.stderr)
         return equal_split(h), equal_split(w), None
 
-    cx = circles[0, :, 0]
-    cy = circles[0, :, 1]
+    # Drop circles too close to the image border (likely box frame, not tubes)
+    margin = short * 0.04
+    mask = (
+        (circles[0, :, 0] > margin) & (circles[0, :, 0] < w - margin) &
+        (circles[0, :, 1] > margin) & (circles[0, :, 1] < h - margin)
+    )
+    kept = circles[0][mask]
+
+    if len(kept) < 20:
+        print(f"  Grid detection: only {len(kept)} circles after edge filter — using equal division",
+              file=sys.stderr)
+        return equal_split(h), equal_split(w), circles  # still show raw circles in debug
+
+    cx, cy = kept[:, 0], kept[:, 1]
     print(f"  Grid detection: found {len(cx)} tube circles", file=sys.stderr)
 
-    col_centers = np.linspace(cx.min(), cx.max(), 10)
-    row_centers = np.linspace(cy.min(), cy.max(), 10)
+    col_centers = cluster_1d(cx, 10)
+    row_centers = cluster_1d(cy, 10)
+
+    if len(col_centers) < 10 or len(row_centers) < 10:
+        print("  Grid detection: could not resolve 10 columns/rows — using equal division",
+              file=sys.stderr)
+        return equal_split(h), equal_split(w), circles
 
     x_lines = centers_to_boundaries(col_centers, w)
     y_lines = centers_to_boundaries(row_centers, h)
