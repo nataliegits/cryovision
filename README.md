@@ -78,7 +78,7 @@ Filled: 87/100   Empty/unread: 13/100
 ## How it works
 
 1. **OpenCV preprocessing** — perspective correction (detects the box border and flattens tilt), CLAHE contrast enhancement, and sharpening to make labels more legible
-2. **Grid line detection** — Hough line transform finds the actual grid lines in the image and crops each of the 100 cells individually; falls back to equal division if lines can't be detected
+2. **Circle-based grid detection** — HoughCircles detects tube caps as circles and fits the 10×10 grid to where the tubes actually are; falls back to equal division if too few circles are found
 3. **Row compositing** — the 10 cell crops per row are tiled into a single labelled image with column numbers above each cell
 4. **Claude vision** — each row composite is sent to `claude-opus-4-6` with thinking mode enabled; Claude sees a close-up of each individual tube cap and reasons carefully before answering
 5. **Graceful fallback** — if a row can't be parsed, it's filled with `null` rather than crashing
@@ -106,30 +106,28 @@ Built for a molecular biology lab that stores DNA oligos and PCR primers in 10×
 
 Initial approach: use Claude's vision API as a quick wrapper — no training data needed, works out of the box.
 
+### v5 — circle-based grid detection + individual cell crops
+- **Circle-based grid detection** — OpenCV detects tube caps as circles (HoughCircles) and fits the 10×10 grid to where the tubes actually are, rather than assuming equal spacing; falls back to equal division if too few circles are found
+- **Individual cell crops** — each of the 100 tube positions is cropped individually and composited into a labelled row image before being sent to Claude; Claude now sees one tube at a time rather than a strip of 10
+- **`--debug` flag** — saves the preprocessed image with green grid lines and cyan circles overlaid so you can verify detection before spending API credits
+- **`--fast` mode** — row strips without thinking, for quicker cheaper runs
+
+### v4 — CSV export
+- `--output results.csv` exports a spreadsheet-friendly CSV with columns `position`, `row`, `column`, `label`
+- `--output results.json` still works — format is auto-detected from the file extension
+
 ### v3 — OpenCV preprocessing + row-by-row analysis
 *Motivation: shared with the lab group; feedback was that handwritten cap labels weren't parsing accurately. Group recommended pivoting to traditional CV (OpenCV, YOLO, SAM, Roboflow).*
 
-Implemented a hybrid approach as a stepping stone:
 - **OpenCV pipeline** added before Claude: perspective warp, CLAHE contrast enhancement, unsharp mask sharpening
 - **Row-by-row splitting** replaces quadrants — Claude now sees a 1×10 strip per call (10 calls) instead of a 5×5 quadrant (4 calls), giving ~2.5× more pixels per tube
 - **`--fast` flag** to fall back to quadrant mode when speed/cost matters
-- Roadmap: move toward YOLO tube detection + individual cell crops → eventually replace Claude with a trained OCR model
-
-### v5 — individual cell crops + grid detection
-- **Circle-based grid detection** — OpenCV detects the tube caps as circles (HoughCircles) and fits the 10×10 grid to where the tubes actually are, rather than assuming equal spacing; falls back to equal division if too few circles are found
-- **Individual cell crops** — each of the 100 tube positions is cropped individually and composited into a labelled row image before being sent to Claude; Claude now sees one tube at a time rather than a strip of 10
-- **`--debug` flag** — saves the preprocessed image with green grid lines and cyan circles overlaid so you can verify detection before spending API credits
-- **`--fast` mode** — replaces the old quadrant mode; uses row strips without thinking for quicker, cheaper runs
-
-### v4 — CSV export
-- `--output results.csv` now exports a spreadsheet-friendly CSV with columns `position`, `row`, `column`, `label`
-- `--output results.json` still works as before — format is auto-detected from the file extension
 
 ### v2 — improved accuracy
-- **Quadrant splitting:** image divided into 4 sections before sending to Claude
-- **Thinking mode:** Claude reasons through ambiguous labels before committing (`thinking: adaptive`)
-- **Better prompting:** position-by-position instructions, cap color as fallback
-- **Summary line:** filled vs empty count at the bottom of the grid
+- **Quadrant splitting** — image divided into 4 sections before sending to Claude
+- **Thinking mode** — Claude reasons through ambiguous labels before committing (`thinking: adaptive`)
+- **Better prompting** — position-by-position instructions, cap color as fallback
+- **Summary line** — filled vs empty count at the bottom of the grid
 
 ### v1 — initial release
 - Single-image analysis via Claude vision API
@@ -142,7 +140,8 @@ Implemented a hybrid approach as a stepping stone:
 
 The group recommended moving toward traditional computer vision for better accuracy on handwritten labels. Planned next steps:
 
-- [x] **Individual tube crops** — detect grid lines with OpenCV and crop each of the 100 cells individually before sending to Claude
+- [x] **Individual tube crops** — detect tube caps as circles and crop each of the 100 cells individually before sending to Claude
+- [x] **Circle-based grid detection** — fit the grid to detected tube centres rather than assuming equal spacing
 - [ ] **YOLO tube detection** — train a model to locate tubes regardless of box orientation or partial occlusion
 - [ ] **Roboflow training pipeline** — label a dataset of freezer box images for fine-tuning
 - [ ] **Replace Claude with local OCR** — once tube positions are reliably detected, run Tesseract or a fine-tuned text recognition model on each crop for offline, zero-cost operation
