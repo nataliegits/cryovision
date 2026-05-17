@@ -98,82 +98,61 @@ def preprocess_cv(image_path: Path) -> np.ndarray:
 
 # ─── Grid detection ───────────────────────────────────────────────────────────
 
-def cluster_lines(coords: list[int], n_expected: int, img_size: int) -> list[int]:
-    """Merge nearby detected lines into cluster centres. Falls back to equal spacing."""
-    if len(coords) < 3:
-        return [int(img_size * i / n_expected) for i in range(n_expected + 1)]
-
-    coords = sorted(coords)
-    threshold = img_size // (n_expected * 3)
-    clusters: list[list[int]] = [[coords[0]]]
-    for v in coords[1:]:
-        if v - clusters[-1][-1] < threshold:
-            clusters[-1].append(v)
-        else:
-            clusters.append([v])
-
-    centres = [int(np.mean(c)) for c in clusters]
-    return centres
+def equal_split(size: int) -> list[int]:
+    return [int(size * i / 10) for i in range(11)]
 
 
-def detect_grid(img: np.ndarray) -> tuple[list[int], list[int]]:
+def centers_to_boundaries(centers: np.ndarray, size: int) -> list[int]:
+    """Convert 10 cell centres to 11 boundary lines."""
+    centers = np.sort(centers)
+    spacing = np.median(np.diff(centers)) if len(centers) > 1 else size / 10
+    boundaries = [int(centers[0] - spacing / 2)]
+    for i in range(len(centers) - 1):
+        boundaries.append(int((centers[i] + centers[i + 1]) / 2))
+    boundaries.append(int(centers[-1] + spacing / 2))
+    # Clamp to image
+    boundaries = [max(0, min(size, b)) for b in boundaries]
+    # Interpolate to exactly 11 points
+    return [int(v) for v in np.linspace(boundaries[0], boundaries[-1], 11)]
+
+
+def detect_grid(img: np.ndarray) -> tuple[list[int], list[int], object]:
     """
-    Detect the 11×11 grid line positions using Hough lines.
-    Returns (y_lines, x_lines) — each a sorted list of 11 pixel positions.
-    Falls back to equal division when detection is unreliable.
+    Detect tube caps as circles with HoughCircles, fit a 10×10 grid to their
+    centres. Falls back to equal division if too few circles are found.
+    Returns (y_lines, x_lines, circles_or_None).
     """
     h, w = img.shape[:2]
-
-    def equal_split(size: int) -> list[int]:
-        return [int(size * i / 10) for i in range(11)]
-
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 30, 100)
+    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
 
-    lines = cv2.HoughLinesP(
-        edges, 1, np.pi / 180,
-        threshold=int(min(w, h) * 0.25),
-        minLineLength=min(w, h) * 0.25,
-        maxLineGap=min(w, h) * 0.05,
+    short = min(h, w)
+    min_r    = int(short / 28)
+    max_r    = int(short / 14)
+    min_dist = int(short / 13)
+
+    circles = cv2.HoughCircles(
+        blurred, cv2.HOUGH_GRADIENT, dp=1,
+        minDist=min_dist,
+        param1=60, param2=28,
+        minRadius=min_r, maxRadius=max_r,
     )
 
-    if lines is None:
-        print("  Grid detection: no lines found, using equal division", file=sys.stderr)
-        return equal_split(h), equal_split(w)
+    if circles is None or len(circles[0]) < 20:
+        n = 0 if circles is None else len(circles[0])
+        print(f"  Grid detection: found {n} circles — using equal division", file=sys.stderr)
+        return equal_split(h), equal_split(w), None
 
-    h_coords, v_coords = [], []
-    for x1, y1, x2, y2 in lines[:, 0]:
-        angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
-        if angle < 20:
-            h_coords.append((y1 + y2) // 2)
-        elif angle > 70:
-            v_coords.append((x1 + x2) // 2)
+    cx = circles[0, :, 0]
+    cy = circles[0, :, 1]
+    print(f"  Grid detection: found {len(cx)} tube circles", file=sys.stderr)
 
-    y_centres = cluster_lines(h_coords, 10, h)
-    x_centres = cluster_lines(v_coords, 10, w)
+    col_centers = np.linspace(cx.min(), cx.max(), 10)
+    row_centers = np.linspace(cy.min(), cy.max(), 10)
 
-    # We need roughly 11 boundary lines. If we found ~10 interior lines, add edges.
-    def to_boundaries(centres: list[int], size: int) -> list[int]:
-        if not centres:
-            return equal_split(size)
-        pts = list(centres)
-        if pts[0] > size * 0.15:
-            pts.insert(0, 0)
-        if pts[-1] < size * 0.85:
-            pts.append(size)
-        # Interpolate to exactly 11
-        return [int(v) for v in np.linspace(pts[0], pts[-1], 11)]
-
-    y_lines = to_boundaries(y_centres, h)
-    x_lines = to_boundaries(x_centres, w)
-
-    detected = len(y_centres) >= 3 and len(x_centres) >= 3
-    method = "Hough lines" if detected else "equal division (fallback)"
-    print(f"  Grid detection: {method} "
-          f"({len(y_centres)} h-lines, {len(x_centres)} v-lines found)",
-          file=sys.stderr)
-
-    return y_lines, x_lines
+    x_lines = centers_to_boundaries(col_centers, w)
+    y_lines = centers_to_boundaries(row_centers, h)
+    return y_lines, x_lines, circles
 
 
 # ─── Cell cropping & compositing ─────────────────────────────────────────────
@@ -225,13 +204,20 @@ def make_row_composite(cells: list[Image.Image], row_label: str) -> Image.Image:
 def save_debug(cv_img: np.ndarray,
                y_lines: list[int],
                x_lines: list[int],
-               out_path: Path) -> None:
-    """Save a copy of the preprocessed image with the detected grid overlaid."""
+               out_path: Path,
+               circles: np.ndarray | None = None) -> None:
+    """Save preprocessed image with detected grid and circles overlaid."""
     debug = cv_img.copy()
+    # Grid lines in green
     for y in y_lines:
         cv2.line(debug, (0, y), (debug.shape[1], y), (0, 255, 0), 2)
     for x in x_lines:
         cv2.line(debug, (x, 0), (x, debug.shape[0]), (0, 255, 0), 2)
+    # Detected circles in cyan
+    if circles is not None:
+        for cx, cy, r in np.round(circles[0]).astype(int):
+            cv2.circle(debug, (cx, cy), r, (255, 255, 0), 2)
+            cv2.circle(debug, (cx, cy), 3, (255, 255, 0), -1)
     cv2.imwrite(str(out_path), debug)
     print(f"  Debug image saved: {out_path}", file=sys.stderr)
 
@@ -332,11 +318,12 @@ def analyze_box_cells(image_path: Path, debug: bool) -> dict[str, str | None]:
     pil_img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
 
     print("Detecting grid…", file=sys.stderr)
-    y_lines, x_lines = detect_grid(cv_img)
+    y_lines, x_lines, circles = detect_grid(cv_img)
 
     if debug:
         save_debug(cv_img, y_lines, x_lines,
-                   image_path.parent / f"{image_path.stem}_debug.jpg")
+                   image_path.parent / f"{image_path.stem}_debug.jpg",
+                   circles=circles)
 
     cells = crop_cells(pil_img, y_lines, x_lines)
 
