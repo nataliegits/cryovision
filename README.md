@@ -1,6 +1,6 @@
-# cryovision
+# cryovision 🧊📦
 
-Identify sample labels in a 10×10 cryogenic freezer storage box using Claude's vision API.
+Ever spent 20 minutes digging through a freezer box looking for one tube? Same. CryoVision uses Claude's vision API to read your 10×10 cryobox from a single photo — no more guessing which cap says GAPDH-F.
 
 Point it at a photo of your box and it returns a JSON map of every grid position (A1–J10) with whatever label text, cap color, or description it can read.
 
