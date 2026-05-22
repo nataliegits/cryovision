@@ -78,16 +78,31 @@ Filled: 87/100   Empty/unread: 13/100
 ## How it works
 
 1. **OpenCV preprocessing** — perspective correction (detects the box border and flattens tilt), CLAHE contrast enhancement, and sharpening to make labels more legible
-2. **Circle-based grid detection** — HoughCircles detects tube caps as circles and fits the 10×10 grid to where the tubes actually are; falls back to equal division if too few circles are found
-3. **Row compositing** — the 10 cell crops per row are tiled into a single labelled image with column numbers above each cell
-4. **Claude vision** — each row composite is sent to `claude-opus-4-6` with thinking mode enabled; Claude sees a close-up of each individual tube cap and reasons carefully before answering
-5. **Graceful fallback** — if a row can't be parsed, it's filled with `null` rather than crashing
+2. **RF-DETR tube detection** — a Roboflow-trained RF-DETR Object Detection model locates tube caps and returns exact center coordinates and radii; falls back to HoughCircles if no Roboflow API key is set
+3. **Circle-to-grid assignment** — detected circle centres are clustered by x and y coordinate to assign each tube a row (A–J) and column (1–10) label; no boundary lines are computed
+4. **Circle-centered crops** — each occupied cell is cropped as a square centered directly on the detected tube cap center, sized to the detected radius; crops are guaranteed to be centered on the actual cap regardless of grid geometry
+5. **Row compositing** — crops for each occupied row are tiled into a single labeled image with column numbers above each crop; empty rows are skipped entirely
+6. **Claude vision** — each row composite is sent to `claude-opus-4-6` with thinking mode enabled; Claude sees only confirmed-occupied positions and reasons through each label
+7. **Graceful fallback** — if a row can't be parsed, it's filled with `null` rather than crashing
 
-Use `--debug` to save a copy of the preprocessed image with two overlays:
-- **Green lines** — the 10×10 grid boundaries used to crop each cell
-- **Cyan circles** — the individual tube caps detected by HoughCircles
+The key design decision: rather than computing 10×10 grid boundary lines and cropping rectangular cells from those (which compounds any alignment error), the pipeline crops directly from the detected tube positions. The detector already knows exactly where each cap is — the grid is only used for labeling, not for cropping.
 
-Check this image before running a full analysis — if the circles are landing on the caps and the green lines sit between tubes, detection is working correctly. If not, it tells you exactly what's off.
+Use `--debug` to save a copy of the preprocessed image with each detected tube circled in cyan and labeled with its assigned grid position (e.g. A3, G7). This makes it easy to verify that detections are landing on the right caps and being assigned to the correct row/column.
+
+### RF-DETR setup (optional but recommended)
+
+RF-DETR gives significantly better tube detection than HoughCircles, especially for clear caps and mixed-color boxes. To enable it:
+
+1. Create a free account at [Roboflow](https://roboflow.com/) and train a model on your own freezer box images (label the tube caps as a single `tube` class)
+2. Export the model and note the model ID (e.g. `myworkspace/mymodel/1`)
+3. Set environment variables:
+
+```bash
+export ROBOFLOW_API_KEY="your-api-key"
+export ROBOFLOW_MODEL_ID="myworkspace/mymodel/1"
+```
+
+The tool will automatically use RF-DETR when the key is present and fall back to HoughCircles otherwise.
 
 ## Tips for best results
 
@@ -105,6 +120,37 @@ Check this image before running a full analysis — if the circles are landing o
 Built for a molecular biology lab that stores DNA oligos and PCR primers in 10×10 cryoboxes. The problem: keeping track of which tube is where when caps are labeled by hand (gene names, primer IDs, etc.) and the box layout changes over time.
 
 Initial approach: use Claude's vision API as a quick wrapper — no training data needed, works out of the box.
+
+### v7 — RF-DETR integration via Roboflow
+
+HoughCircles works well for boxes with uniform, high-contrast caps but struggles with clear caps, mixed cap colors, and partial occlusion. The lab's boxes often have green sticker caps, clear caps, and white caps in the same box, which caused frequent misses.
+
+The fix: train a dedicated object detection model to find tube caps directly.
+
+**Model training on Roboflow:**
+- Created a Roboflow project and labeled freezer box photos with bounding boxes around each tube cap (single `tube` class)
+- Trained using RF-DETR Object Detection (Small) — a transformer-based detector that handles varying cap appearances better than classical CV
+- Starting dataset: ~4 images; enough to learn the basic cap shape but not yet robust to all lighting and color variations
+
+**Detection pipeline changes:**
+- `detect_tubes_rfdetr()` — calls the trained model via the Roboflow `inference` SDK at confidence=0.15; converts bounding box predictions to the same (cx, cy, r) format used by HoughCircles so the rest of the pipeline is unchanged
+- `detect_grid()` now runs both RF-DETR and HoughCircles on every image; uses RF-DETR for grid geometry when it finds ≥40 tubes (more precise, no false positives), falls back to HoughCircles for grid geometry when RF-DETR is sparse — but always uses RF-DETR's detections for the presence map when available
+- Confidence threshold tuned to 0.15 (down from 0.3) to maximize recall on an undertrained model; false positives are less harmful than missed tubes at this stage
+- `ROBOFLOW_API_KEY` / `ROBOFLOW_MODEL_ID` env vars control the integration; the tool degrades gracefully to HoughCircles when they're not set
+
+**Adaptive clustering with percentile-bin fallback:**
+- `find_clusters_adaptive()` replaces the fixed `gap_ratio=3.0` used previously; it sweeps gap ratios from 7.0 down to 2.0 and picks the one that produces the closest to 10 clusters
+- When no gap ratio achieves exactly 10 (e.g. perspective distortion makes some columns appear as 12 clusters), it falls back to percentile binning: sorts all detected x- or y-coordinates, splits into 10 equal-count bins, and takes the median of each bin — guaranteeing exactly 10 grid lines regardless of distribution
+
+**Presence map:**
+- After fitting the grid, each detected tube centre is mapped to its cell (i, j); cells with no detection are pre-emptively marked `null` at the CV level and skipped entirely when building row composites for Claude
+- This eliminated the main source of hallucinated labels ("white cap", "green cap") on empty cardboard slots — Claude never sees those cells
+
+**Circle-centered crops (the key accuracy fix):**
+- Previous versions computed 11 horizontal and 11 vertical boundary lines, then cropped rectangular cells from those boundaries. Any error in boundary placement compounds: a line 10px off means every cell in that row is slightly wrong, and the tube cap might be cut off or the crop might include part of the adjacent cap.
+- New approach: skip boundaries entirely. RF-DETR already returns the exact center (cx, cy) and size (r) of each tube cap. The crop is simply a square centered on (cx, cy) with side length proportional to r. No boundary lines are computed or needed.
+- Grid position assignment (A1, B3, etc.) still uses clustering on the circle centers, but this is used only to label the crops — not to determine where to cut. The crops are always perfectly centered regardless of how well the grid clustering works.
+- `assign_circles_to_grid()` handles the label assignment; `crop_circle_composite()` builds row composites from circle-centered crops; the debug overlay now shows each detected tube labeled with its assigned position rather than showing grid boundary lines.
 
 ### v6 — HoughCircles tuning: one circle per tube
 
@@ -154,6 +200,8 @@ The group recommended moving toward traditional computer vision for better accur
 
 - [x] **Individual tube crops** — detect tube caps as circles and crop each of the 100 cells individually before sending to Claude
 - [x] **Circle-based grid detection** — fit the grid to detected tube centres rather than assuming equal spacing
-- [ ] **YOLO tube detection** — train a model to locate tubes regardless of box orientation or partial occlusion
-- [ ] **Roboflow training pipeline** — label a dataset of freezer box images for fine-tuning
+- [x] **RF-DETR tube detection** — trained a Roboflow RF-DETR model to locate tube caps regardless of cap color or type; integrated with graceful HoughCircles fallback
+- [x] **Roboflow training pipeline** — labeled freezer box images and trained via Roboflow; model handles green sticker caps, clear caps, and white caps
+- [x] **Presence map** — CV-level null filter prevents Claude from hallucinating labels on empty cells
+- [ ] **Expand training dataset** — currently ~4 images; need 50-100 for robust generalization to new boxes, lighting conditions, and cap types
 - [ ] **Replace Claude with local OCR** — once tube positions are reliably detected, run Tesseract or a fine-tuned text recognition model on each crop for offline, zero-cost operation
